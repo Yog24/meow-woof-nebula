@@ -11,13 +11,7 @@ function getModels() {
 }
 
 function getAiConfig() {
-  const defaultDeployedKey = 'sk-ikyfnHliVvaSpjpbJfoz81dsTpG4cXp0DxlJQSn65ujEdyj9';
-  
   let userKey = typeof window !== 'undefined' ? localStorage.getItem('wangxing_user_api_key') : null;
-  // Ignore the old incorrectly cached key
-  if (userKey === 'sk-ZMkKgOfZjrxLlVN7Iu5Z6NxHMBvoXJm8E2ntgRvUUvhmWzRm') {
-    userKey = null;
-  }
   
   let baseUrl = typeof window !== 'undefined' ? localStorage.getItem('wangxing_user_base_url') : null;
   
@@ -29,8 +23,7 @@ function getAiConfig() {
     }
   }
   
-  // Custom logic: user key overrides default deployed key.
-  let apiKey = (userKey && userKey.trim() !== '') ? userKey : defaultDeployedKey;
+  const apiKey = (userKey && userKey.trim() !== '') ? userKey : null;
   
   if (!apiKey) return null;
 

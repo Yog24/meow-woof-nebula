@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "backend:dev": "tsx backend/src/server.ts",
+    "backend:test": "tsx --test backend/tests/**/*.test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

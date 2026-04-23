@@ -11,8 +11,7 @@ interface AiSettingsProps {
 export function AiSettings({ onClose, onResetChat }: AiSettingsProps) {
   const [activeTab, setActiveTab] = useState<'api' | 'data'>('api');
   const [resetSuccess, setResetSuccess] = useState(false);
-  const defaultDeployedKey = 'sk-ikyfnHliVvaSpjpbJfoz81dsTpG4cXp0DxlJQSn65ujEdyj9';
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('wangxing_user_api_key') || defaultDeployedKey);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('wangxing_user_api_key') || '');
   const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem('wangxing_user_base_url') || 'https://once.novai.su/v1');
   const [showKey, setShowKey] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -39,11 +38,7 @@ export function AiSettings({ onClose, onResetChat }: AiSettingsProps) {
 
   useEffect(() => {
     const savedKey = localStorage.getItem('wangxing_user_api_key');
-    // Clear old incorrectly cached default key
-    if (savedKey === 'sk-ZMkKgOfZjrxLlVN7Iu5Z6NxHMBvoXJm8E2ntgRvUUvhmWzRm') {
-      localStorage.setItem('wangxing_user_api_key', defaultDeployedKey);
-      setApiKey(defaultDeployedKey);
-    } else if (savedKey) {
+    if (savedKey) {
       setApiKey(savedKey);
     }
 
@@ -195,7 +190,7 @@ export function AiSettings({ onClose, onResetChat }: AiSettingsProps) {
                       type={showKey ? "text" : "password"}
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder={defaultDeployedKey ? "已设置默认令牌 (sk-...)" : "sk-.........................................."}
+                      placeholder="sk-.........................................."
                       className="w-full bg-sepia-50 border border-sepia-100 rounded-2xl px-4 py-4 text-[13px] focus:outline-none focus:ring-2 focus:ring-sepia-200 focus:border-sepia-300 transition-all font-mono text-sepia-700"
                     />
                     <button
