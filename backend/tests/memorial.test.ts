@@ -3,12 +3,13 @@ import { Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { createApp } from "../src/app";
+import { buildTestRuntimeConfig } from "./testRuntimeConfig";
 
 let server: Server;
 let baseUrl = "";
 
 before(async () => {
-  const app = createApp();
+  const app = createApp(buildTestRuntimeConfig("memorial"));
   server = app.listen(0);
   await new Promise<void>((resolve) => {
     server.once("listening", () => resolve());

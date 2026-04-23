@@ -3,7 +3,7 @@ import { Server, createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { createApp } from "../src/app";
-import { RuntimeConfig } from "../src/config/runtime";
+import { buildTestRuntimeConfig } from "./testRuntimeConfig";
 
 let server: Server;
 let baseUrl = "";
@@ -19,7 +19,7 @@ before(async () => {
   const upstreamAddress = upstreamServer.address() as AddressInfo;
   upstreamBaseUrl = `http://127.0.0.1:${upstreamAddress.port}/v1`;
 
-  const runtimeConfig: RuntimeConfig = {
+  const runtimeConfig = buildTestRuntimeConfig("ai", {
     ai: {
       openAiApiKey: "test-openai-key",
       openAiBaseUrl: upstreamBaseUrl,
@@ -29,14 +29,14 @@ before(async () => {
     imageTasks: {
       falKey: undefined,
       falQueueBaseUrl: "http://127.0.0.1:1",
-      falModelId: "fal-ai/flux-kontext/dev",
+      falModelId: "fal-ai/flux-2/edit",
       falPollIntervalMs: 10,
       falTimeoutMs: 1000,
     },
     scheduling: {
       pollIntervalMs: 20,
     },
-  };
+  });
 
   const app = createApp(runtimeConfig);
   server = app.listen(0);

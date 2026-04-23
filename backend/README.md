@@ -136,16 +136,17 @@ npm run backend:test
 覆盖能力：
 
 - 真实图片 `data URL` 上传
+- 单任务最多 4 张参考图
 - 像素图生成任务创建
 - `queued -> processing -> completed` 异步状态流
 - 结果轮询与统一尺寸输出元数据
-- 已接入真实 `FLUX.1 Kontext` 队列调用
+- 已接入真实 `fal-ai/flux-2/edit` 队列调用
 
 运行要求：
 
 - `FAL_KEY`
 - 可选 `FAL_QUEUE_BASE_URL`
-- 可选 `FAL_FLUX_KONTEXT_MODEL`
+- 可选 `FAL_MODEL_ID` 或 `FAL_FLUX_2_MODEL`
 - 可选 `FAL_POLL_INTERVAL_MS`
 - 可选 `FAL_TIMEOUT_MS`
 

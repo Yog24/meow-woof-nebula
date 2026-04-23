@@ -21,15 +21,14 @@ async function startServer() {
   app.post("/api/v1/pet-ai-proxy", async (req, res) => {
     try {
       const { baseUrl, apiKey, body } = req.body;
-      const effectiveBaseUrl = baseUrl || 'https://once.novai.su/v1';
 
-      if (!apiKey || !body) {
-        console.error("Proxy Error: Missing parameters", { hasKey: !!apiKey, hasBody: !!body });
+      if (!baseUrl || !apiKey || !body) {
+        console.error("Proxy Error: Missing parameters", { hasBaseUrl: !!baseUrl, hasKey: !!apiKey, hasBody: !!body });
         return res.status(400).json({ error: { message: "Missing required proxy parameters" } });
       }
 
       // Cleanup baseUrl and ensure correct endpoint
-      let cleanBase = effectiveBaseUrl.trim().replace(/\/$/, '');
+      let cleanBase = normalizeBaseUrl(baseUrl);
       if (cleanBase.endsWith('/chat/completions')) {
         cleanBase = cleanBase.replace(/\/chat\/completions$/, '');
       }
@@ -92,13 +91,50 @@ async function startServer() {
       res.status(500).json({ error: { message: `Internal Proxy Error: ${error instanceof Error ? error.message : "Unknown"}`, origin: 'proxy' } });
     }
   });
+
+  app.use("/api/v1", async (req, res) => {
+    const backendTarget = (process.env.BACKEND_PROXY_TARGET || "http://127.0.0.1:3100").replace(/\/$/, "");
+    const targetUrl = `${backendTarget}/api/v1${req.url}`;
+    try {
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (!value || key.toLowerCase() === "host" || key.toLowerCase() === "content-length") continue;
+        headers.set(key, Array.isArray(value) ? value.join(",") : value);
+      }
+
+      const response = await fetch(targetUrl, {
+        method: req.method,
+        headers,
+        body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(req.body || {}),
+      });
+
+      response.headers.forEach((value, key) => {
+        if (key.toLowerCase() !== "content-encoding") {
+          res.setHeader(key, value);
+        }
+      });
+      const body = Buffer.from(await response.arrayBuffer());
+      res.status(response.status).send(body);
+    } catch (error) {
+      console.error(`[Backend Proxy] Failed to forward ${req.method} ${targetUrl}`, error);
+      res.status(502).json({
+        error: {
+          message: `Backend proxy failed: ${error instanceof Error ? error.message : "unknown error"}`,
+          targetUrl,
+        },
+      });
+    }
+  });
   
   // Image Generation Proxy Route
   app.post("/api/ai/proxy-image", async (req, res) => {
     try {
       const { baseUrl, apiKey, body } = req.body;
+      if (!baseUrl || !apiKey || !body) {
+        return res.status(400).json({ error: { message: "Missing required image proxy parameters" } });
+      }
 
-      let cleanBase = (baseUrl || 'https://once.novai.su/v1').trim().replace(/\/$/, '');
+      let cleanBase = normalizeBaseUrl(baseUrl);
       if (cleanBase.endsWith('/images/generations')) {
         cleanBase = cleanBase.replace(/\/images\/generations$/, '');
       }
@@ -160,3 +196,8 @@ async function startServer() {
 }
 
 startServer();
+
+function normalizeBaseUrl(rawValue: string): string {
+  const extractedUrl = rawValue.trim().match(/https?:\/\/[^\s，,，）)]+/i)?.[0] || rawValue.trim();
+  return extractedUrl.replace(/\/$/, '');
+}

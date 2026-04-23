@@ -3,12 +3,13 @@ import { Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { createApp } from "../src/app";
+import { buildTestRuntimeConfig } from "./testRuntimeConfig";
 
 let server: Server;
 let baseUrl = "";
 
 before(async () => {
-  const app = createApp();
+  const app = createApp(buildTestRuntimeConfig("social"));
   server = app.listen(0);
   await new Promise<void>((resolve) => {
     server.once("listening", () => resolve());
@@ -214,4 +215,65 @@ test("social flow: whisper, like, comment, friend request", async () => {
   const listFriendRequestsBody = await listFriendRequestsResponse.json();
   assert.equal(listFriendRequestsBody.incoming.length, 1);
   assert.equal(listFriendRequestsBody.incoming[0].status, "accepted");
+});
+
+test("social flow: user search and daily whispers are persistent and idempotent", async () => {
+  const userA = await login("social-code-c", "星云用户C");
+  await login("social-code-d", "星云用户D");
+
+  const searchResponse = await fetch(
+    `${baseUrl}/api/v1/social/users/search?q=${encodeURIComponent("用户D")}`,
+    {
+      headers: {
+        authorization: `Bearer ${userA.accessToken}`,
+      },
+    },
+  );
+  assert.equal(searchResponse.status, 200);
+  const searchBody = await searchResponse.json();
+  assert.equal(searchBody.users.length, 1);
+  assert.equal(searchBody.users[0].nickName, "星云用户D");
+  assert.equal(searchBody.users[0].isFriend, false);
+
+  const firstTodayResponse = await fetch(`${baseUrl}/api/v1/social/whispers/today`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${userA.accessToken}`,
+    },
+    body: JSON.stringify({
+      petId: "local-pet-1",
+      petName: "奶糖",
+      petType: "小猫",
+      personality: "懒, 胆小",
+      ownerTitle: "妈妈",
+      speakingStyle: "ta是粘人小宝宝",
+      memories: ["第一次回家: 它躲在沙发底下，但晚上偷偷贴着我睡"],
+    }),
+  });
+  assert.equal(firstTodayResponse.status, 201);
+  const firstTodayBody = await firstTodayResponse.json();
+  assert.ok(firstTodayBody.whispers.length >= 1);
+  assert.ok(firstTodayBody.whispers.length <= 3);
+  assert.equal(firstTodayBody.whispers[0].petId, "local-pet-1");
+  assert.ok(firstTodayBody.whispers[0].timeLabel);
+  assert.ok(firstTodayBody.whispers[0].locationName);
+
+  const secondTodayResponse = await fetch(`${baseUrl}/api/v1/social/whispers/today`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${userA.accessToken}`,
+    },
+    body: JSON.stringify({
+      petId: "local-pet-1",
+      petName: "奶糖",
+    }),
+  });
+  assert.equal(secondTodayResponse.status, 200);
+  const secondTodayBody = await secondTodayResponse.json();
+  assert.deepEqual(
+    secondTodayBody.whispers.map((whisper: { id: string }) => whisper.id),
+    firstTodayBody.whispers.map((whisper: { id: string }) => whisper.id),
+  );
 });

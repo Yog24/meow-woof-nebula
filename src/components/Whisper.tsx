@@ -1,83 +1,94 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Heart, MessageCircle, Share2, Send, Check, Sparkles, RefreshCw } from 'lucide-react';
+import { Heart, MessageCircle, Share2, Send, Check, RefreshCw, MapPin } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Starfield } from './Starfield';
-import { generateWhisper } from '../services/geminiService';
+import {
+  createWhisperComment,
+  getTodayWhispers,
+  listWhisperComments,
+  SocialWhisper,
+  toggleWhisperLike,
+  WhisperComment,
+} from '../services/backendClient';
+import { buildMemorySnippets } from '../services/nebulaRules';
+import { Story } from '../types';
 
-interface Whisper {
-  id: string;
-  date: string;
-  text: string;
-  imageUrl: string;
-  likes: number;
-  comments: Comment[];
-  isLiked?: boolean;
-}
-
-interface Comment {
-  id: string;
-  user: string;
-  text: string;
-  time: string;
-}
+type WhisperWithComments = SocialWhisper & { comments?: WhisperComment[] };
 
 interface WhisperProps {
+  petId: string;
   ownerTitle: string;
   petName: string;
   petType?: string; // Added to support generation
   personality?: string;
+  speakingStyle?: string;
+  stories?: Story[];
 }
 
-export function Whisper({ ownerTitle, petName, petType = '小狗', personality = '活泼' }: WhisperProps) {
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [whispers, setWhispers] = useState<Whisper[]>([
-    {
-      id: '1',
-      date: '2026.04.20',
-      text: `${ownerTitle}，我今天在玫瑰星云公园追到了一颗流星。在那之后，我还看到了一朵巨大的发光玫瑰，它开得比家里的任何花都要漂亮。`,
-      imageUrl: 'https://picsum.photos/seed/nebula1/600/400',
-      likes: 128,
-      comments: [
-        { id: 'c1', user: '喵汪星观察员', text: '好美的玫瑰！', time: '10分钟前' }
-      ]
-    },
-    {
-      id: '2',
-      date: '2026.04.19',
-      text: `${ownerTitle}，今天的重力窝特别暖和。我做了一个梦，梦见你在给我梳毛，梳得我肚皮痒痒的，忍不住翻了个跟头。`,
-      imageUrl: 'https://picsum.photos/seed/nebula2/600/400',
-      likes: 85,
-      comments: []
-    },
-    {
-      id: '3',
-      date: '2026.04.18',
-      text: `${ownerTitle}，在彗尾跑道跑了一整圈后，我出了一身的星尘汗。现在我正坐在极光眺望台上，看着你那里的方向呢，你感觉到了吗？`,
-      imageUrl: 'https://picsum.photos/seed/nebula3/600/400',
-      likes: 214,
-      comments: []
-    }
-  ]);
-
+export function Whisper({
+  petId,
+  ownerTitle,
+  petName,
+  petType = '小狗',
+  personality = '活泼',
+  speakingStyle,
+  stories,
+}: WhisperProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const [whispers, setWhispers] = useState<WhisperWithComments[]>([]);
+  const [loadError, setLoadError] = useState('');
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
   const [showShareToast, setShowShareToast] = useState(false);
 
-  const handleLike = (id: string) => {
-    setWhispers(prev => prev.map(w => {
-      if (w.id === id) {
-        return {
-          ...w,
-          likes: w.isLiked ? w.likes - 1 : w.likes + 1,
-          isLiked: !w.isLiked
-        };
-      }
-      return w;
-    }));
+  const loadTodayWhispers = async () => {
+    setIsLoading(true);
+    setLoadError('');
+    try {
+      const result = await getTodayWhispers({
+        petId,
+        petName,
+        petType,
+        personality,
+        ownerTitle,
+        speakingStyle,
+        memories: buildMemorySnippets(stories),
+      });
+      setWhispers(result.whispers);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '耳语加载失败');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleShare = (w: Whisper) => {
+  useEffect(() => {
+    void loadTodayWhispers();
+  }, [petId]);
+
+  const handleLike = async (id: string) => {
+    const previous = whispers;
+    setWhispers(prev => prev.map(w => {
+      if (w.id !== id) return w;
+      return {
+        ...w,
+        likedByMe: !w.likedByMe,
+        likeCount: w.likedByMe ? Math.max(0, w.likeCount - 1) : w.likeCount + 1,
+      };
+    }));
+    try {
+      const result = await toggleWhisperLike(id);
+      setWhispers(prev => prev.map(w => (
+        w.id === id ? { ...w, likedByMe: result.liked, likeCount: result.likeCount } : w
+      )));
+    } catch (error) {
+      setWhispers(previous);
+      setLoadError(error instanceof Error ? error.message : '点赞失败');
+    }
+  };
+
+  const handleShare = (w: WhisperWithComments) => {
     // Try to use native share if available
     if (navigator.share) {
       navigator.share({
@@ -91,56 +102,45 @@ export function Whisper({ ownerTitle, petName, petType = '小狗', personality =
       });
     } else {
       // Fallback: Copy to clipboard and show toast
-      navigator.clipboard.writeText(`${w.text}\n\n遥远太空的信号 - ${w.date}`).then(() => {
+      navigator.clipboard.writeText(`${w.text}\n\n遥远太空的信号 - ${formatWhisperDate(w)}`).then(() => {
         setShowShareToast(true);
         setTimeout(() => setShowShareToast(false), 2000);
       });
     }
   };
 
-  const handleAddComment = (id: string) => {
-    if (!commentText.trim()) return;
-    
-    setWhispers(prev => prev.map(w => {
-      if (w.id === id) {
-        return {
-          ...w,
-          comments: [
-            ...w.comments,
-            {
-              id: Date.now().toString(),
-              user: ownerTitle,
-              text: commentText,
-              time: '刚刚'
-            }
-          ]
-        };
-      }
-      return w;
-    }));
-    setCommentText('');
-    setActiveCommentId(null);
+  const handleToggleComments = async (id: string) => {
+    const nextActiveId = activeCommentId === id ? null : id;
+    setActiveCommentId(nextActiveId);
+    if (!nextActiveId) return;
+
+    const target = whispers.find(w => w.id === id);
+    if (target?.comments) return;
+    try {
+      const comments = await listWhisperComments(id);
+      setWhispers(prev => prev.map(w => (w.id === id ? { ...w, comments } : w)));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '评论加载失败');
+    }
   };
 
-  const handleGenerateWhisper = async () => {
-    setIsGenerating(true);
+  const handleAddComment = async (id: string) => {
+    if (!commentText.trim()) return;
+    const text = commentText.trim();
+    setCommentText('');
     try {
-      const text = await generateWhisper(petName, petType, personality, ownerTitle);
-      if (text) {
-        const newWhisper: Whisper = {
-          id: Date.now().toString(),
-          date: new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '.'),
-          text: text,
-          imageUrl: `https://picsum.photos/seed/${encodeURIComponent(text.slice(0, 10))}/600/400`,
-          likes: 0,
-          comments: []
-        };
-        setWhispers([newWhisper, ...whispers]);
-      }
+      const comment = await createWhisperComment(id, text);
+      setWhispers(prev => prev.map(w => (
+        w.id === id
+          ? {
+              ...w,
+              comments: [...(w.comments || []), comment],
+              commentCount: w.commentCount + 1,
+            }
+          : w
+      )));
     } catch (error) {
-      console.error(error);
-    } finally {
-      setIsGenerating(false);
+      setLoadError(error instanceof Error ? error.message : '评论发送失败');
     }
   };
 
@@ -159,23 +159,29 @@ export function Whisper({ ownerTitle, petName, petType = '小狗', personality =
           </div>
           <div className="flex flex-col items-end gap-3 translate-y-2">
             <button 
-              onClick={handleGenerateWhisper}
-              disabled={isGenerating}
+              onClick={loadTodayWhispers}
+              disabled={isLoading}
               className={cn(
                 "flex items-center gap-2 px-5 py-2.5 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full border border-white/20 text-white transition-all shadow-xl active:scale-95 disabled:opacity-50 group",
-                isGenerating && "bg-white/5"
+                isLoading && "bg-white/5"
               )}
             >
-              {isGenerating ? (
+              {isLoading ? (
                 <RefreshCw size={16} className="animate-spin text-blue-300" />
               ) : (
-                <Sparkles size={16} className="text-amber-300 group-hover:rotate-12 transition-transform" />
+                <RefreshCw size={16} className="text-amber-300 group-hover:rotate-12 transition-transform" />
               )}
-              <span className="text-[13px] font-bold tracking-wider">捕捉新信号</span>
+              <span className="text-[13px] font-bold tracking-wider">同步今日信号</span>
             </button>
             <p className="text-[9px] font-bold text-white/30 uppercase tracking-[0.2em]">{new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
           </div>
         </header>
+
+        {loadError && (
+          <div className="bg-rose-500/10 border border-rose-400/30 text-rose-100 text-xs rounded-2xl px-4 py-3">
+            {loadError}
+          </div>
+        )}
 
         <div className="space-y-10 relative z-10">
           {whispers.map((w, idx) => (
@@ -189,18 +195,22 @@ export function Whisper({ ownerTitle, petName, petType = '小狗', personality =
             <div className="bg-[#11131A]/80 backdrop-blur-xl rounded-[3rem] overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.3)] border border-white/10">
               <div className="relative aspect-[3/2] overflow-hidden">
                 <img 
-                  src={w.imageUrl} 
+                  src={w.imageUrl || `https://picsum.photos/seed/${encodeURIComponent(w.id)}/600/400`}
                   alt="whisper" 
                   className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110 opacity-90" 
                   referrerPolicy="no-referrer"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-[#11131A] via-transparent to-transparent opacity-100" />
                 <div className="absolute top-6 left-6 px-4 py-2 bg-black/40 backdrop-blur-md rounded-full border border-white/10">
-                  <p className="text-[10px] text-white/80 font-bold tracking-widest uppercase shadow-sm">{w.date}</p>
+                  <p className="text-[10px] text-white/80 font-bold tracking-widest uppercase shadow-sm">{formatWhisperDate(w)}</p>
                 </div>
               </div>
               
               <div className="p-8 space-y-6 relative z-10 w-full mt-[-20px] bg-transparent">
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/10 rounded-full border border-white/10 text-[10px] text-blue-100 font-bold">
+                  <MapPin size={12} />
+                  {w.locationName || '喵汪星'}
+                </div>
                 <p className="text-lg text-white/90 font-medium leading-relaxed font-serif drop-shadow-sm">
                   {w.text}
                 </p>
@@ -211,25 +221,25 @@ export function Whisper({ ownerTitle, petName, petType = '小狗', personality =
                       onClick={() => handleLike(w.id)}
                       className={cn(
                         "flex items-center gap-2 transition-all duration-300 active:scale-125",
-                        w.isLiked ? "text-rose-400 drop-shadow-[0_0_10px_rgba(244,63,94,0.5)]" : "text-white/40 hover:text-rose-300"
+                        w.likedByMe ? "text-rose-400 drop-shadow-[0_0_10px_rgba(244,63,94,0.5)]" : "text-white/40 hover:text-rose-300"
                       )}
                     >
                       <motion.div
-                        animate={w.isLiked ? { scale: [1, 1.4, 1] } : {}}
+                        animate={w.likedByMe ? { scale: [1, 1.4, 1] } : {}}
                       >
-                        <Heart size={20} fill={w.isLiked ? "currentColor" : "none"} />
+                        <Heart size={20} fill={w.likedByMe ? "currentColor" : "none"} />
                       </motion.div>
-                      <span className="text-xs font-bold font-mono">{w.likes}</span>
+                      <span className="text-xs font-bold font-mono">{w.likeCount}</span>
                     </button>
                     <button 
-                      onClick={() => setActiveCommentId(activeCommentId === w.id ? null : w.id)}
+                      onClick={() => handleToggleComments(w.id)}
                       className={cn(
                         "flex items-center gap-2 transition-colors",
                         activeCommentId === w.id ? "text-blue-300" : "text-white/40 hover:text-blue-200"
                       )}
                     >
                       <MessageCircle size={20} />
-                      <span className="text-xs font-bold font-mono text-white/50">{w.comments.length}</span>
+                      <span className="text-xs font-bold font-mono text-white/50">{w.commentCount}</span>
                     </button>
                   </div>
                   <button 
@@ -249,11 +259,11 @@ export function Whisper({ ownerTitle, petName, petType = '小狗', personality =
                       className="overflow-hidden"
                     >
                       <div className="pt-4 space-y-4">
-                        {w.comments.map(c => (
+                        {(w.comments || []).map(c => (
                           <div key={c.id} className="flex flex-col gap-1">
                             <div className="flex items-center gap-2">
-                              <span className="text-[10px] font-bold text-white/40 uppercase tracking-wider">{c.user}</span>
-                              <span className="text-[8px] text-white/30">{c.time}</span>
+                              <span className="text-[10px] font-bold text-white/40 uppercase tracking-wider">{c.author?.nickName || '看星的人'}</span>
+                              <span className="text-[8px] text-white/30">{formatRelativeTime(c.createdAt)}</span>
                             </div>
                             <p className="text-sm text-white bg-white/5 p-3 rounded-2xl rounded-tl-none border border-white/5">
                               {c.text}
@@ -308,4 +318,20 @@ export function Whisper({ ownerTitle, petName, petType = '小狗', personality =
       </AnimatePresence>
     </div>
   );
+}
+
+function formatWhisperDate(whisper: WhisperWithComments) {
+  const date = whisper.dateKey || whisper.createdAt.slice(0, 10);
+  return `${date.replace(/-/g, '.')} ${whisper.timeLabel || ''}`.trim();
+}
+
+function formatRelativeTime(value: string) {
+  const diffMs = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return '刚刚';
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  return new Date(value).toLocaleDateString('zh-CN');
 }

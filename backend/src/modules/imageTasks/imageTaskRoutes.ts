@@ -104,7 +104,7 @@ export function createImageTaskRouter(
     const userId = requireUserId(req, res, authService);
     if (!userId) return;
 
-    const assetId = typeof req.body?.assetId === "string" ? req.body.assetId.trim() : "";
+    const assetIds = normalizeAssetIds(req.body?.assetIds, req.body?.assetId);
     const petTypeRaw =
       typeof req.body?.petType === "string" ? req.body.petType.trim().toLowerCase() : "";
     const petType = petTypeRaw === "cat" || petTypeRaw === "dog" ? petTypeRaw : "other";
@@ -117,8 +117,11 @@ export function createImageTaskRouter(
     const preserveTraits =
       typeof req.body?.preserveTraits === "boolean" ? req.body.preserveTraits : true;
 
-    if (!assetId) {
-      return badRequest(res, "assetId is required");
+    if (assetIds.length === 0) {
+      return badRequest(res, "assetId or assetIds are required");
+    }
+    if (assetIds.length > 4) {
+      return badRequest(res, "assetIds can contain at most 4 images for FLUX.2 edit");
     }
     if (!SUPPORTED_OUTPUT_SIZES.has(outputSize)) {
       return badRequest(res, "outputSize must be one of 128, 256, 512");
@@ -126,13 +129,14 @@ export function createImageTaskRouter(
     if (!SUPPORTED_STYLE_PRESETS.has(stylePreset)) {
       return badRequest(res, "unsupported stylePreset");
     }
-    if (!imageTasks.getAsset(userId, assetId)) {
-      return notFound(res, "asset not found");
+    if (assetIds.some((assetId) => !imageTasks.getAsset(userId, assetId))) {
+      return notFound(res, "one or more assets were not found");
     }
 
     const task = imageTasks.createTask({
       userId,
-      assetId,
+      assetId: assetIds[0],
+      assetIds,
       petType,
       outputSize,
       stylePreset,
@@ -186,4 +190,13 @@ export function createImageTaskRouter(
   });
 
   return router;
+}
+
+function normalizeAssetIds(rawAssetIds: unknown, rawAssetId: unknown): string[] {
+  const ids = Array.isArray(rawAssetIds)
+    ? rawAssetIds
+    : typeof rawAssetId === "string"
+      ? [rawAssetId]
+      : [];
+  return [...new Set(ids.filter((id): id is string => typeof id === "string").map((id) => id.trim()).filter(Boolean))];
 }

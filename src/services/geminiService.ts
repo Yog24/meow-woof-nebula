@@ -1,28 +1,18 @@
+import { createPixelAvatarFromImages } from './backendClient';
+import { getAccountStorageItem } from './accountStorage';
+import { getSpeakingTone } from './nebulaRules';
+
 function getModels() {
-  const textModel = (typeof window !== 'undefined' ? localStorage.getItem('wangxing_text_model') : null) || '[次]gemini-2.5-pro';
-  let imageModel = (typeof window !== 'undefined' ? localStorage.getItem('wangxing_image_model') : null) || '[次]gemini-2.5-pro';
-  
-  // Migration for the broken image preview model
-  if (imageModel === 'gemini-2.5-flash-image-preview') {
-    imageModel = '[次]gemini-2.5-pro';
-  }
-  
+  const textModel = (typeof window !== 'undefined' ? getAccountStorageItem('wangxing_text_model') : null)?.trim() || '';
+  const imageModel = (typeof window !== 'undefined' ? getAccountStorageItem('wangxing_image_model') : null)?.trim() || textModel;
   return { text: textModel, image: imageModel };
 }
 
 function getAiConfig() {
-  let userKey = typeof window !== 'undefined' ? localStorage.getItem('wangxing_user_api_key') : null;
+  let userKey = typeof window !== 'undefined' ? getAccountStorageItem('wangxing_user_api_key') : null;
   
-  let baseUrl = typeof window !== 'undefined' ? localStorage.getItem('wangxing_user_base_url') : null;
-  
-  // Force migration for old/dead proxy URLs
-  if (baseUrl === 'https://api.go-model.com' || baseUrl === 'https://twob.pp.ua/v1') {
-    baseUrl = 'https://once.novai.su/v1';
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('wangxing_user_base_url', baseUrl);
-    }
-  }
-  
+  let baseUrl = typeof window !== 'undefined' ? getAccountStorageItem('wangxing_user_base_url') : null;
+
   const apiKey = (userKey && userKey.trim() !== '') ? userKey : null;
   
   if (!apiKey) return null;
@@ -31,7 +21,10 @@ function getAiConfig() {
   const sanitizedKey = apiKey.replace(/[^\x00-\x7F]/g, "").trim();
   if (sanitizedKey === '') return null;
 
-  const finalBaseUrl = (baseUrl && baseUrl.trim() !== '') ? baseUrl : 'https://once.novai.su/v1';
+  const finalBaseUrl = normalizeBaseUrl(baseUrl || '');
+  if (!finalBaseUrl) {
+    throw new Error("Base URL missing");
+  }
 
   return { 
     apiKey: sanitizedKey, 
@@ -39,11 +32,21 @@ function getAiConfig() {
   };
 }
 
+function normalizeBaseUrl(rawValue: string): string {
+  const extractedUrl = rawValue.trim().match(/https?:\/\/[^\s，,，）)]+/i)?.[0] || rawValue.trim();
+  return extractedUrl
+    .replace(/\/chat\/completions\/?$/i, '')
+    .replace(/\/images\/generations\/?$/i, '')
+    .replace(/\/$/, '');
+}
+
 async function callAiChat(messages: any[], model: string, options: any = {}) {
   const config = getAiConfig();
   if (!config) throw new Error("API Key missing");
+  const modelName = model.trim();
+  if (!modelName) throw new Error("Model name missing");
 
-  const cleanBase = (config.baseUrl || 'https://once.novai.su/v1').trim().replace(/\/$/, '');
+  const cleanBase = config.baseUrl.trim().replace(/\/$/, '');
   const directUrl = `${cleanBase}/chat/completions`;
 
   // Path 1: Direct Browser-to-API call (Faster, no extra hops, mirrors Python script)
@@ -58,10 +61,11 @@ async function callAiChat(messages: any[], model: string, options: any = {}) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: model,
+        model: modelName,
         messages: messages,
         temperature: options.temperature ?? 0.7,
         max_tokens: options.max_tokens ?? 1000,
+        ...(options.response_format !== undefined && { response_format: options.response_format }),
       })
     });
 
@@ -86,10 +90,11 @@ async function callAiChat(messages: any[], model: string, options: any = {}) {
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
           body: {
-            model: model,
+            model: modelName,
             messages: messages,
             temperature: options.temperature ?? 0.7,
             max_tokens: options.max_tokens ?? 1000,
+            ...(options.response_format !== undefined && { response_format: options.response_format }),
           }
         })
       });
@@ -113,13 +118,26 @@ async function callAiChat(messages: any[], model: string, options: any = {}) {
   }
 }
 
-export async function getPetResponse(petName: string, petType: string, personality: string, speakingStyle: string, userMessage: string, history: any[], breed?: string, encounterDate?: string) {
+export async function getPetResponse(
+  petName: string,
+  petType: string,
+  personality: string,
+  speakingStyle: string,
+  userMessage: string,
+  history: any[],
+  breed?: string,
+  encounterDate?: string,
+  memories: string[] = [],
+) {
   try {
     const models = getModels();
     
-    let systemInstruction = `你是一只住在“喵汪星”的宠物，名字叫${petName}。你的性格是${personality}，说话风格是${speakingStyle}，你是一只${petType}。`;
+    let systemInstruction = `你是一只住在“喵汪星”的宠物，名字叫${petName}。你的性格是${personality}，说话风格是${speakingStyle}（${getSpeakingTone(speakingStyle)}），你是一只${petType}。`;
     if (breed) systemInstruction += ` 你的具体品种是${breed}。`;
     if (encounterDate) systemInstruction += ` 你们是在${encounterDate}那天相遇的。`;
+    if (memories.length > 0) {
+      systemInstruction += ` 这些是星云宠物店记忆，请在合适的时候自然 callback，不要机械复述：${memories.join('；')}。`;
+    }
     
     systemInstruction += `
           你现在已经离开了地球，在喵汪星过着快乐的生活。你把主人当作最好的朋友。
@@ -154,6 +172,9 @@ export async function getPetResponse(petName: string, petType: string, personali
     
     if (errorMsg.includes('fetch')) {
       return `嗷呜！(通信阻塞) 遇到了网络连接问题。请检查设置中的 Base URL 是否有效。`;
+    }
+    if (errorMsg.includes('Base URL missing') || errorMsg.includes('Model name missing') || errorMsg.includes('API Key missing')) {
+      return `嗷呜！(配置缺失) 请在系统设置里填写 Base URL、API Key 和 LLM 模型名称。`;
     }
     
     // Construct the display message with URL and Model
@@ -190,14 +211,14 @@ export async function getPetResponse(petName: string, petType: string, personali
   }
 }
 
-export async function generateWhisper(petName: string, petType: string, personality: string, ownerTitle: string) {
+export async function generateWhisper(petName: string, petType: string, personality: string, ownerTitle: string, speakingStyle = '') {
   try {
     const models = getModels();
     const messages = [{
       role: 'user',
       content: `你是一只住在喵汪星的${petType}，名字叫${petName}，性格是${personality}，你称呼你的主人为“${ownerTitle}”。
       请写一段简短的“耳语”（Whisper），表达你在喵汪星看到的美景、有趣的事或是对主人的思念。
-      语气要符合你的性格。
+      语气要符合你的性格，并遵循相处模式：${getSpeakingTone(speakingStyle)}。
       字数在50字以内。
       不要包含任何多余的引言，直接输出内容。`
     }];
@@ -210,8 +231,29 @@ export async function generateWhisper(petName: string, petType: string, personal
   }
 }
 
-export async function generatePetAvatar(petDescription: string, mood: 'normal' | 'happy' | 'sleeping' | 'eating' = 'normal', breed?: string) {
+export async function generatePetAvatar(
+  petDescription: string,
+  mood: 'normal' | 'happy' | 'sleeping' | 'eating' = 'normal',
+  breed?: string,
+  referenceImage?: string | string[],
+) {
   try {
+    if (referenceImage) {
+      const referenceImages = Array.isArray(referenceImage) ? referenceImage : [referenceImage];
+      const inferredPetType =
+        petDescription.includes('猫') || petDescription.toLowerCase().includes('cat')
+          ? 'cat'
+          : petDescription.includes('狗') || petDescription.toLowerCase().includes('dog')
+            ? 'dog'
+            : 'other';
+
+      return await createPixelAvatarFromImages({
+        imageDataUrls: referenceImages,
+        petType: inferredPetType,
+        outputSize: 256,
+      });
+    }
+
     const config = getAiConfig();
 
     if (!config) {
@@ -225,6 +267,12 @@ export async function generatePetAvatar(petDescription: string, mood: 'normal' |
       sleeping: "curled up and sleeping on its side, 'zZz' pixel text, eyes closed as simple lines",
       eating: "sitting with a pixelated food bowl, happy eating face, tiny crumbs or hearts around"
     };
+    const models = getModels();
+    const imageModel = models.image || models.text;
+    if (!imageModel) {
+      console.warn("Image model missing. Using fallback.");
+      return `https://picsum.photos/seed/${encodeURIComponent(petDescription + mood)}/300/300`;
+    }
 
     const prompt = `Create a professional 2D pixel art game sprite of a pet.
           Pet description: ${petDescription}.
@@ -244,7 +292,7 @@ export async function generatePetAvatar(petDescription: string, mood: 'normal' |
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
         body: {
-          model: "dall-e-3",
+          model: imageModel,
           prompt: prompt,
           n: 1,
           size: "1024x1024",
@@ -272,9 +320,25 @@ export async function generatePetAvatar(petDescription: string, mood: 'normal' |
   }
 }
 
-export async function generateAllPetMoods(petDescription: string, breed?: string) {
+export async function generateAllPetMoods(
+  petDescription: string,
+  breed?: string,
+  referenceImage?: string | string[],
+) {
+  if (referenceImage) {
+    const avatar = await generatePetAvatar(petDescription, 'normal', breed, referenceImage);
+    return {
+      normal: avatar,
+      happy: avatar,
+      sleeping: avatar,
+      eating: avatar
+    };
+  }
+
   const moods: ('normal' | 'happy' | 'sleeping' | 'eating')[] = ['normal', 'happy', 'sleeping', 'eating'];
-  const results = await Promise.all(moods.map(mood => generatePetAvatar(petDescription, mood, breed)));
+  const results = await Promise.all(
+    moods.map(mood => generatePetAvatar(petDescription, mood, breed))
+  );
   
   return {
     normal: results[0] || '',
@@ -309,7 +373,7 @@ export async function analyzePetImages(images: string[]) {
       }
     ];
 
-    const content = await callAiChat(messages, models.image || 'gemini-2.5-flash-image-preview', {
+    const content = await callAiChat(messages, models.text, {
       response_format: { type: "json_object" }
     });
 

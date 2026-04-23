@@ -3,7 +3,7 @@ import { Server, createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { createApp } from "../src/app";
-import { RuntimeConfig } from "../src/config/runtime";
+import { buildTestRuntimeConfig } from "./testRuntimeConfig";
 
 let server: Server;
 let baseUrl = "";
@@ -20,7 +20,7 @@ before(async () => {
   const falAddress = falServer.address() as AddressInfo;
   falBaseUrl = `http://127.0.0.1:${falAddress.port}`;
 
-  const runtimeConfig: RuntimeConfig = {
+  const runtimeConfig = buildTestRuntimeConfig("image-tasks", {
     ai: {
       openAiApiKey: "test-openai-key",
       openAiBaseUrl: "http://127.0.0.1:1/v1",
@@ -30,14 +30,14 @@ before(async () => {
     imageTasks: {
       falKey: "test-fal-key",
       falQueueBaseUrl: falBaseUrl,
-      falModelId: "fal-ai/flux-kontext/dev",
+      falModelId: "fal-ai/flux-2/edit",
       falPollIntervalMs: 10,
       falTimeoutMs: 1000,
     },
     scheduling: {
       pollIntervalMs: 20,
     },
-  };
+  });
 
   const app = createApp(runtimeConfig);
   server = app.listen(0);
@@ -191,7 +191,7 @@ test("image task flow: upload -> task -> poll -> result", async () => {
   const resultBody = await resultResponse.json();
   assert.equal(resultBody.result.width, 256);
   assert.equal(resultBody.result.height, 256);
-  assert.equal(resultBody.result.model, "fal-ai/flux-kontext/dev");
+  assert.equal(resultBody.result.model, "fal-ai/flux-2/edit");
   assert.equal(resultBody.result.imageUrl, "https://cdn.example.com/pixel-pet.png");
 });
 
@@ -206,23 +206,24 @@ function createFakeFalQueueServer(): Server {
 
     res.setHeader("content-type", "application/json");
 
-    if (req.url === "/fal-ai/flux-kontext/dev" && req.method === "POST") {
+    if (req.url === "/fal-ai/flux-2/edit" && req.method === "POST") {
       assert.equal(typeof body.prompt, "string");
-      assert.equal(typeof body.image_url, "string");
+      assert.equal(Array.isArray(body.image_urls), true);
+      assert.equal(typeof body.image_urls[0], "string");
       const requestId = "req_test_1";
       falRequests.set(requestId, { pollCount: 0 });
       res.statusCode = 200;
       res.end(
         JSON.stringify({
           request_id: requestId,
-          status_url: `${falBaseUrl}/fal-ai/flux-kontext/dev/requests/${requestId}/status`,
-          response_url: `${falBaseUrl}/fal-ai/flux-kontext/dev/requests/${requestId}`,
+          status_url: `${falBaseUrl}/fal-ai/flux-2/edit/requests/${requestId}/status`,
+          response_url: `${falBaseUrl}/fal-ai/flux-2/edit/requests/${requestId}`,
         }),
       );
       return;
     }
 
-    if (req.url === "/fal-ai/flux-kontext/dev/requests/req_test_1/status" && req.method === "GET") {
+    if (req.url === "/fal-ai/flux-2/edit/requests/req_test_1/status" && req.method === "GET") {
       const state = falRequests.get("req_test_1");
       if (!state) {
         res.statusCode = 404;
@@ -240,7 +241,7 @@ function createFakeFalQueueServer(): Server {
       return;
     }
 
-    if (req.url === "/fal-ai/flux-kontext/dev/requests/req_test_1" && req.method === "GET") {
+    if (req.url === "/fal-ai/flux-2/edit/requests/req_test_1" && req.method === "GET") {
       res.statusCode = 200;
       res.end(
         JSON.stringify({

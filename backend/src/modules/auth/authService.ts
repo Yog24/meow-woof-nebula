@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
-  InMemoryUserRepository,
   User,
+  UserRepository,
   UserProfileInput,
 } from "../users/userRepository";
 
@@ -27,7 +27,14 @@ interface RefreshResult {
   session: AuthSession;
 }
 
-class InMemorySessionStore {
+export interface SessionStore {
+  create(userId: string): AuthSession;
+  findByAccessToken(accessToken: string): AuthSession | null;
+  rotateByRefreshToken(refreshToken: string): AuthSession | null;
+  deleteByAccessToken(accessToken: string): void;
+}
+
+export class InMemorySessionStore implements SessionStore {
   private readonly sessionsById = new Map<string, AuthSession>();
   private readonly sessionIdByAccessToken = new Map<string, string>();
   private readonly sessionIdByRefreshToken = new Map<string, string>();
@@ -107,9 +114,10 @@ class InMemorySessionStore {
 }
 
 export class AuthService {
-  private readonly sessions = new InMemorySessionStore();
-
-  constructor(private readonly users: InMemoryUserRepository) {}
+  constructor(
+    private readonly users: UserRepository,
+    private readonly sessions: SessionStore = new InMemorySessionStore(),
+  ) {}
 
   loginByWeChatCode(code: string, profile: UserProfileInput = {}): AuthResult {
     const normalizedCode = code.trim();

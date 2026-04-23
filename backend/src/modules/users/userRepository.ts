@@ -20,7 +20,15 @@ export interface UserPublicProfile {
   avatarUrl?: string;
 }
 
-export class InMemoryUserRepository {
+export interface UserRepository {
+  upsertByOpenId(openId: string, profile?: UserProfileInput): User;
+  findById(userId: string): User | null;
+  existsById(userId: string): boolean;
+  getPublicProfileById(userId: string): UserPublicProfile | null;
+  searchPublicProfiles(query: string, options?: { excludeUserId?: string; limit?: number }): UserPublicProfile[];
+}
+
+export class InMemoryUserRepository implements UserRepository {
   private readonly usersById = new Map<string, User>();
   private readonly userIdByOpenId = new Map<string, string>();
 
@@ -73,5 +81,26 @@ export class InMemoryUserRepository {
       nickName: user.nickName,
       avatarUrl: user.avatarUrl,
     };
+  }
+
+  searchPublicProfiles(
+    query: string,
+    options: { excludeUserId?: string; limit?: number } = {},
+  ): UserPublicProfile[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    const limit = Math.max(1, Math.min(50, options.limit || 20));
+    return [...this.usersById.values()]
+      .filter((user) => user.id !== options.excludeUserId)
+      .filter((user) => {
+        if (!normalizedQuery) return true;
+        return user.nickName.toLowerCase().includes(normalizedQuery);
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit)
+      .map((user) => ({
+        id: user.id,
+        nickName: user.nickName,
+        avatarUrl: user.avatarUrl,
+      }));
   }
 }

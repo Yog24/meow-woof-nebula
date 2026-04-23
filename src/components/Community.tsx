@@ -4,6 +4,8 @@ import { Compass, Sparkles, Heart, MapPin, Send } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { LANDMARKS, DOG_BREEDS, CAT_BREEDS } from '../constants';
 import { Landmark, Pet } from '../types';
+import { PublicUserProfile, searchBackendUsers, sendBackendFriendRequest } from '../services/backendClient';
+import { chooseLandmarkForPersonality, getPersonalitySpeed } from '../services/nebulaRules';
 
 interface PetNode {
   id: string;
@@ -20,6 +22,11 @@ interface PetNode {
   isPlayer?: boolean;
   action?: string;
   pauseUntil?: number;
+  userId?: string;
+  avatarUrl?: string;
+  isRealUser?: boolean;
+  isFriend?: boolean;
+  hasPendingRequest?: boolean;
 }
 
 interface StarMessage {
@@ -54,6 +61,7 @@ export function Community({ myPet }: CommunityProps) {
   const [selectedPet, setSelectedPet] = useState<PetNode | null>(null);
   const [zoom, setZoom] = useState(1);
   const [messageInput, setMessageInput] = useState('');
+  const [socialStatus, setSocialStatus] = useState('');
   const [starMessages, setStarMessages] = useState<StarMessage[]>([]);
   const [{ pets, encounters }, setSimState] = useState<SimulationState>({
     pets: [],
@@ -61,6 +69,7 @@ export function Community({ myPet }: CommunityProps) {
   });
   
   const containerRef = useRef<HTMLDivElement>(null);
+  const realUsersRef = useRef<PublicUserProfile[]>([]);
 
   // Fallback map generation - minimal reliance on advanced browser features
   const starField = React.useMemo(() => (
@@ -91,7 +100,7 @@ export function Community({ myPet }: CommunityProps) {
     };
 
     const breeds = [...DOG_BREEDS, ...CAT_BREEDS];
-    const initialPets: PetNode[] = Array.from({ length: 15 }).map((_, i) => {
+    const initialPets: PetNode[] = Array.from({ length: 10 }).map((_, i) => {
       let startX = Math.random() * 100;
       let startY = Math.random() * 100;
       let pause = 0;
@@ -149,6 +158,49 @@ export function Community({ myPet }: CommunityProps) {
   }, [myPet]);
 
   useEffect(() => {
+    const loadRealUsers = async () => {
+      try {
+        const users = await searchBackendUsers('');
+        realUsersRef.current = users;
+        setSimState(prev => {
+          const existingIds = new Set(prev.pets.map(pet => pet.userId).filter(Boolean));
+          const realPetNodes = users
+            .filter(user => !existingIds.has(user.id))
+            .slice(0, 12)
+            .map((user, index): PetNode => {
+              const startX = 20 + Math.random() * 65;
+              const startY = 20 + Math.random() * 70;
+              return {
+                id: `user-${user.id}`,
+                userId: user.id,
+                name: user.nickName,
+                type: '星云旅人',
+                breed: user.isFriend ? '看星伙伴' : '路过旅人',
+                x: startX,
+                y: startY,
+                targetX: startX,
+                targetY: startY,
+                vx: 0,
+                vy: 0,
+                avatarUrl: user.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(user.nickName || String(index))}&backgroundColor=c0aede`,
+                isRealUser: true,
+                isFriend: user.isFriend,
+                hasPendingRequest: user.hasPendingRequest,
+              };
+            });
+          return {
+            ...prev,
+            pets: [...prev.pets.filter(pet => !pet.id.startsWith('user-')), ...realPetNodes],
+          };
+        });
+      } catch {
+        // The universe still works with local simulated travelers when social loading fails.
+      }
+    };
+    void loadRealUsers();
+  }, []);
+
+  useEffect(() => {
     const LANDMARK_POSITIONS: Record<string, { x: number, y: number }> = {
       '1': { x: 25, y: 40 },
       '2': { x: 50, y: 15 },
@@ -180,7 +232,9 @@ export function Community({ myPet }: CommunityProps) {
           let action = undefined;
           if (dist < 2) {
             if (Math.random() < 0.8) {
-              const l = LANDMARKS[Math.floor(Math.random() * LANDMARKS.length)];
+              const l = p.isPlayer
+                ? chooseLandmarkForPersonality(myPet.personality)
+                : LANDMARKS[Math.floor(Math.random() * LANDMARKS.length)];
               const pos = LANDMARK_POSITIONS[l.id] || { x: 50, y: 50 };
               const angle = Math.random() * Math.PI * 2;
               const radius = 6 + Math.random() * 6;
@@ -209,11 +263,12 @@ export function Community({ myPet }: CommunityProps) {
             action = acts[landmarkId] || '游玩中';
           }
 
-          const force = 0.0033;
+          const speedMultiplier = p.isPlayer ? getPersonalitySpeed(myPet.personality) : (p.isRealUser ? 0.9 : 1);
+          const force = 0.0033 * speedMultiplier;
           vx += (targetX - x) * force;
           vy += (targetY - y) * force;
-          vx *= 0.90;
-          vy *= 0.90;
+          vx *= p.isPlayer && speedMultiplier < 0.8 ? 0.86 : 0.90;
+          vy *= p.isPlayer && speedMultiplier < 0.8 ? 0.86 : 0.90;
 
           return { ...p, x: x + vx, y: y + vy, targetX, targetY, vx, vy, landmarkId, action, pauseUntil };
         });
@@ -256,7 +311,7 @@ export function Community({ myPet }: CommunityProps) {
     }, 80);
 
     return () => clearInterval(loop);
-  }, []);
+  }, [myPet.personality]);
 
   const LANDMARK_POSITIONS: Record<string, { x: number, y: number }> = {
     '1': { x: 25, y: 40 },
@@ -280,6 +335,24 @@ export function Community({ myPet }: CommunityProps) {
       }]);
       setMessageInput('');
       setSelectedPet(null);
+    }
+  };
+
+  const handleAddFriend = async (petNode: PetNode) => {
+    if (!petNode.userId || petNode.isFriend || petNode.hasPendingRequest) return;
+    setSocialStatus('');
+    try {
+      await sendBackendFriendRequest(petNode.userId);
+      setSocialStatus('好友请求已发出');
+      setSimState(prev => ({
+        ...prev,
+        pets: prev.pets.map(pet => (
+          pet.id === petNode.id ? { ...pet, hasPendingRequest: true } : pet
+        )),
+      }));
+      setSelectedPet(prev => prev ? { ...prev, hasPendingRequest: true } : prev);
+    } catch (error) {
+      setSocialStatus(error instanceof Error ? error.message : '好友请求发送失败');
     }
   };
 
@@ -461,7 +534,7 @@ export function Community({ myPet }: CommunityProps) {
                    p.isPlayer ? "border-[3px] border-blue-400" : "border-2 border-white/40"
                 )}>
                     <img 
-                      src={p.isPlayer ? myPet.imageUrl : `https://loremflickr.com/150/150/${p.type === '小狗' ? 'dog' : 'cat'}?lock=${p.id.replace(/\D/g, '') || '1'}`} 
+                      src={p.isPlayer ? myPet.imageUrl : (p.avatarUrl || `https://loremflickr.com/150/150/${p.type === '小狗' ? 'dog' : 'cat'}?lock=${p.id.replace(/\D/g, '') || '1'}`)}
                       className="w-full h-full object-cover bg-[#1a1a2e] image-pixelated"
                       alt={p.name}
                       referrerPolicy="no-referrer"
@@ -553,7 +626,7 @@ export function Community({ myPet }: CommunityProps) {
             >
               <div className="flex flex-col items-center mb-6">
                 <img 
-                  src={selectedPet.isPlayer ? myPet.imageUrl : `https://loremflickr.com/150/150/${selectedPet.type === '小狗' ? 'dog' : 'cat'}?lock=${selectedPet.id.replace(/\D/g, '') || '1'}`} 
+                  src={selectedPet.isPlayer ? myPet.imageUrl : (selectedPet.avatarUrl || `https://loremflickr.com/150/150/${selectedPet.type === '小狗' ? 'dog' : 'cat'}?lock=${selectedPet.id.replace(/\D/g, '') || '1'}`)}
                   alt={selectedPet.name}
                   className="w-24 h-24 rounded-full border-4 border-white/10 mb-4 bg-slate-800 object-cover image-pixelated"
                   referrerPolicy="no-referrer"
@@ -580,6 +653,20 @@ export function Community({ myPet }: CommunityProps) {
                   <Heart size={28} />
                 </button>
               </div>
+
+              {selectedPet.isRealUser && !selectedPet.isPlayer && (
+                <button
+                  onClick={() => handleAddFriend(selectedPet)}
+                  disabled={selectedPet.isFriend || selectedPet.hasPendingRequest}
+                  className="w-full mb-4 bg-white/10 disabled:bg-white/5 disabled:text-white/40 text-white py-3 rounded-2xl font-bold text-sm hover:bg-white/20 transition-colors border border-white/10"
+                >
+                  {selectedPet.isFriend ? '已经是看星伙伴' : selectedPet.hasPendingRequest ? '好友请求已发出' : '加为看星伙伴'}
+                </button>
+              )}
+
+              {socialStatus && (
+                <p className="text-center text-xs text-white/50 mb-4">{socialStatus}</p>
+              )}
 
               <div className="bg-[#0B0F19]/60 backdrop-blur-xl p-2 rounded-full flex gap-2 border border-blue-500/30 items-center pl-4 shadow-[0_0_15px_rgba(59,130,246,0.15)] relative">
                 <input 

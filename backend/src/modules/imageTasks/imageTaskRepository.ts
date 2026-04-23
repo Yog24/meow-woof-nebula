@@ -30,6 +30,7 @@ export interface ImageTask {
   id: string;
   userId: string;
   assetId: string;
+  assetIds: string[];
   petType: "cat" | "dog" | "other";
   status: ImageTaskStatus;
   outputSize: OutputSize;
@@ -43,17 +44,47 @@ export interface ImageTask {
   resultId?: string;
   errorMessage?: string;
   sourceFilename: string;
+  sourceFilenames: string[];
 }
 
 export interface CreateImageTaskInput {
   assetId: string;
+  assetIds?: string[];
   petType: "cat" | "dog" | "other";
   outputSize: OutputSize;
   stylePreset: PixelStylePreset;
   preserveTraits: boolean;
 }
 
-export class InMemoryImageTaskRepository {
+export interface ImageTaskRepository {
+  createAsset(input: {
+    userId: string;
+    filename: string;
+    contentType: string;
+    sizeBytes: number;
+    dataUrl: string;
+  }): ImageAsset;
+  findAssetByIdForUser(userId: string, assetId: string): ImageAsset | null;
+  createTask(userId: string, input: CreateImageTaskInput): ImageTask | null;
+  findTaskByIdForUser(userId: string, taskId: string): ImageTask | null;
+  listTasksByUserId(userId: string): ImageTask[];
+  markTaskProcessing(userId: string, taskId: string): ImageTask | null;
+  markTaskFailed(userId: string, taskId: string, errorMessage: string): ImageTask | null;
+  completeTask(
+    userId: string,
+    taskId: string,
+    input: {
+      imageUrl: string;
+      width: number;
+      height: number;
+      model: string;
+      stylePreset: PixelStylePreset;
+    },
+  ): { task: ImageTask; result: ImageResult } | null;
+  findResultByTaskIdForUser(userId: string, taskId: string): ImageResult | null;
+}
+
+export class InMemoryImageTaskRepository implements ImageTaskRepository {
   private readonly assetsById = new Map<string, ImageAsset>();
   private readonly assetIdsByUserId = new Map<string, string[]>();
   private readonly tasksById = new Map<string, ImageTask>();
@@ -91,14 +122,18 @@ export class InMemoryImageTaskRepository {
   }
 
   createTask(userId: string, input: CreateImageTaskInput): ImageTask | null {
-    const asset = this.findAssetByIdForUser(userId, input.assetId);
-    if (!asset) return null;
+    const assetIds = normalizeAssetIds(input.assetIds || [input.assetId]);
+    const assets = assetIds.map((assetId) => this.findAssetByIdForUser(userId, assetId));
+    if (assets.some((asset) => !asset)) return null;
+    const firstAsset = assets[0];
+    if (!firstAsset) return null;
 
     const now = new Date().toISOString();
     const task: ImageTask = {
       id: randomUUID(),
       userId,
-      assetId: input.assetId,
+      assetId: firstAsset.id,
+      assetIds,
       petType: input.petType,
       status: "queued",
       outputSize: input.outputSize,
@@ -106,7 +141,8 @@ export class InMemoryImageTaskRepository {
       preserveTraits: input.preserveTraits,
       createdAt: now,
       updatedAt: now,
-      sourceFilename: asset.filename,
+      sourceFilename: firstAsset.filename,
+      sourceFilenames: assets.map((asset) => asset?.filename || ""),
     };
 
     this.tasksById.set(task.id, task);
@@ -205,4 +241,8 @@ export class InMemoryImageTaskRepository {
     if (!result || result.userId !== userId) return null;
     return result;
   }
+}
+
+function normalizeAssetIds(assetIds: string[]): string[] {
+  return [...new Set(assetIds.map((assetId) => assetId.trim()).filter(Boolean))].slice(0, 4);
 }

@@ -1,8 +1,9 @@
 import { Request, Response, Router } from "express";
 import { AuthService } from "../auth/authService";
 import { InMemoryMemorialRepository } from "../memorial/memorialRepository";
-import { InMemoryUserRepository } from "../users/userRepository";
-import { InMemorySocialRepository } from "./socialRepository";
+import { UserRepository } from "../users/userRepository";
+import { buildDailyWhispers } from "./dailyWhispers";
+import { SocialRepository } from "./socialRepository";
 
 const BEARER_PREFIX = "Bearer ";
 
@@ -66,11 +67,30 @@ function requireUserId(req: Request, res: Response, authService: AuthService): s
 
 export function createSocialRouter(
   authService: AuthService,
-  users: InMemoryUserRepository,
+  users: UserRepository,
   memorials: InMemoryMemorialRepository,
-  socials: InMemorySocialRepository,
+  socials: SocialRepository,
 ): Router {
   const router = Router();
+
+  router.get("/users/search", (req, res) => {
+    const me = requireUserId(req, res, authService);
+    if (!me) return;
+
+    const query = typeof req.query.q === "string" ? req.query.q : "";
+    const limitRaw =
+      typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : 20;
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, limitRaw)) : 20;
+    const results = users.searchPublicProfiles(query, { excludeUserId: me, limit }).map((user) => {
+      const relationship = socials.findRelationshipState(me, user.id);
+      return {
+        ...user,
+        isFriend: relationship.isFriend,
+        hasPendingRequest: relationship.hasPendingRequest,
+      };
+    });
+    return res.status(200).json({ users: results });
+  });
 
   router.get("/whispers", (req, res) => {
     const me = requireUserId(req, res, authService);
@@ -88,6 +108,73 @@ export function createSocialRouter(
     }));
 
     return res.status(200).json({ whispers });
+  });
+
+  router.get("/whispers/today", (req, res) => {
+    const me = requireUserId(req, res, authService);
+    if (!me) return;
+
+    const petId = typeof req.query.petId === "string" ? req.query.petId.trim() : "";
+    if (!petId) {
+      return badRequest(res, "petId is required");
+    }
+
+    const dateKey = getLocalDateKey();
+    const whispers = socials.listWhispersForPetOnDate(me, petId, dateKey).map((whisper) => ({
+      ...whisper,
+      author: users.getPublicProfileById(whisper.authorUserId),
+      likeCount: socials.getWhisperLikeCount(whisper.id),
+      commentCount: socials.listComments(whisper.id)?.length || 0,
+      likedByMe: socials.hasWhisperLikedByUser(whisper.id, me),
+    }));
+    return res.status(200).json({ dateKey, whispers });
+  });
+
+  router.post("/whispers/today", (req, res) => {
+    const me = requireUserId(req, res, authService);
+    if (!me) return;
+
+    const petId = typeof req.body?.petId === "string" ? req.body.petId.trim() : "";
+    const petName = typeof req.body?.petName === "string" ? req.body.petName.trim() : "";
+    if (!petId || !petName) {
+      return badRequest(res, "petId and petName are required");
+    }
+
+    const dateKey = getLocalDateKey();
+    const existing = socials.listWhispersForPetOnDate(me, petId, dateKey);
+    const whispers =
+      existing.length > 0
+        ? existing
+        : buildDailyWhispers(
+            {
+              petId,
+              petName,
+              petType: typeof req.body?.petType === "string" ? req.body.petType : undefined,
+              personality:
+                typeof req.body?.personality === "string" ? req.body.personality : undefined,
+              ownerTitle:
+                typeof req.body?.ownerTitle === "string" ? req.body.ownerTitle : undefined,
+              speakingStyle:
+                typeof req.body?.speakingStyle === "string" ? req.body.speakingStyle : undefined,
+              memories: Array.isArray(req.body?.memories)
+                ? req.body.memories.filter((memory: unknown): memory is string => {
+                    return typeof memory === "string";
+                  })
+                : [],
+            },
+            dateKey,
+          ).map((whisperInput) => socials.createWhisper(me, whisperInput));
+
+    return res.status(existing.length > 0 ? 200 : 201).json({
+      dateKey,
+      whispers: whispers.map((whisper) => ({
+        ...whisper,
+        author: users.getPublicProfileById(whisper.authorUserId),
+        likeCount: socials.getWhisperLikeCount(whisper.id),
+        commentCount: socials.listComments(whisper.id)?.length || 0,
+        likedByMe: socials.hasWhisperLikedByUser(whisper.id, me),
+      })),
+    });
   });
 
   router.post("/whispers", (req, res) => {
@@ -274,4 +361,13 @@ export function createSocialRouter(
   });
 
   return router;
+}
+
+function getLocalDateKey(date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }

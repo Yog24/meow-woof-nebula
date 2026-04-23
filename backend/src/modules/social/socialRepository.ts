@@ -6,6 +6,11 @@ export interface Whisper {
   petId?: string;
   text: string;
   imageUrl?: string;
+  dateKey?: string;
+  timeLabel?: string;
+  locationId?: string;
+  locationName?: string;
+  activityType?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,18 +36,54 @@ export interface CreateWhisperInput {
   text: string;
   petId?: string;
   imageUrl?: string;
+  dateKey?: string;
+  timeLabel?: string;
+  locationId?: string;
+  locationName?: string;
+  activityType?: string;
 }
 
 export interface CreateCommentInput {
   text: string;
 }
 
-interface WhisperLikeResult {
+export interface WhisperLikeResult {
   liked: boolean;
   likeCount: number;
 }
 
-export class InMemorySocialRepository {
+export interface SocialRepository {
+  createWhisper(authorUserId: string, input: CreateWhisperInput): Whisper;
+  getWhisperById(whisperId: string): Whisper | null;
+  listWhispers(limit?: number): Whisper[];
+  listWhispersForPetOnDate(authorUserId: string, petId: string, dateKey: string): Whisper[];
+  toggleWhisperLike(whisperId: string, userId: string): WhisperLikeResult | null;
+  hasWhisperLikedByUser(whisperId: string, userId: string): boolean;
+  getWhisperLikeCount(whisperId: string): number;
+  createComment(
+    whisperId: string,
+    authorUserId: string,
+    input: CreateCommentInput,
+  ): WhisperComment | null;
+  listComments(whisperId: string): WhisperComment[] | null;
+  createFriendRequest(fromUserId: string, toUserId: string): FriendRequest;
+  getFriendRequestById(requestId: string): FriendRequest | null;
+  updateFriendRequest(
+    requestId: string,
+    patch: Pick<FriendRequest, "status" | "respondedAt">,
+  ): FriendRequest | null;
+  findRelationshipState(userIdA: string, userIdB: string): {
+    isFriend: boolean;
+    hasPendingRequest: boolean;
+  };
+  listFriendRequestsForUser(userId: string): {
+    incoming: FriendRequest[];
+    outgoing: FriendRequest[];
+  };
+  listFriendUserIds(userId: string): string[];
+}
+
+export class InMemorySocialRepository implements SocialRepository {
   private readonly whispersById = new Map<string, Whisper>();
   private readonly commentsByWhisperId = new Map<string, WhisperComment[]>();
   private readonly likesByWhisperId = new Map<string, Set<string>>();
@@ -56,6 +97,11 @@ export class InMemorySocialRepository {
       petId: input.petId?.trim() || undefined,
       text: input.text.trim(),
       imageUrl: input.imageUrl?.trim() || undefined,
+      dateKey: input.dateKey?.trim() || undefined,
+      timeLabel: input.timeLabel?.trim() || undefined,
+      locationId: input.locationId?.trim() || undefined,
+      locationName: input.locationName?.trim() || undefined,
+      activityType: input.activityType?.trim() || undefined,
       createdAt: now,
       updatedAt: now,
     };
@@ -74,6 +120,21 @@ export class InMemorySocialRepository {
     return [...this.whispersById.values()]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit);
+  }
+
+  listWhispersForPetOnDate(authorUserId: string, petId: string, dateKey: string): Whisper[] {
+    return [...this.whispersById.values()]
+      .filter((whisper) => {
+        return (
+          whisper.authorUserId === authorUserId &&
+          whisper.petId === petId &&
+          whisper.dateKey === dateKey
+        );
+      })
+      .sort((a, b) => {
+        const timeCompare = (a.timeLabel || "").localeCompare(b.timeLabel || "");
+        return timeCompare || a.createdAt.localeCompare(b.createdAt);
+      });
   }
 
   toggleWhisperLike(whisperId: string, userId: string): WhisperLikeResult | null {

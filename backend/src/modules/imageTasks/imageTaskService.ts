@@ -4,15 +4,15 @@ import {
   ImageAsset,
   ImageResult,
   ImageTask,
-  InMemoryImageTaskRepository,
+  ImageTaskRepository,
   OutputSize,
   PixelStylePreset,
 } from "./imageTaskRepository";
-import { callFalFluxKontext } from "./falKontextClient";
+import { callFalFlux2Edit } from "./falKontextClient";
 
 export class ImageTaskService {
   constructor(
-    private readonly repository: InMemoryImageTaskRepository,
+    private readonly repository: ImageTaskRepository,
     private readonly config: ImageTaskRuntimeConfig,
     private readonly operations?: OperationsService,
   ) {}
@@ -37,6 +37,7 @@ export class ImageTaskService {
   createTask(input: {
     userId: string;
     assetId: string;
+    assetIds?: string[];
     petType: "cat" | "dog" | "other";
     outputSize: OutputSize;
     stylePreset: PixelStylePreset;
@@ -72,16 +73,20 @@ export class ImageTaskService {
     const latestTask = this.repository.findTaskByIdForUser(task.userId, task.id);
     if (!latestTask) return;
 
-    const asset = this.repository.findAssetByIdForUser(task.userId, task.assetId);
-    if (!asset) {
-      this.repository.markTaskFailed(task.userId, task.id, "source asset not found");
+    const assetIds = latestTask.assetIds.length > 0 ? latestTask.assetIds : [latestTask.assetId];
+    const assets = assetIds.map((assetId) =>
+      this.repository.findAssetByIdForUser(task.userId, assetId),
+    );
+    if (assets.some((asset) => !asset)) {
+      this.repository.markTaskFailed(task.userId, task.id, "one or more source assets were not found");
       return;
     }
+    const validAssets = assets.filter((asset): asset is ImageAsset => Boolean(asset));
 
     try {
-      const result = await callFalFluxKontext(this.config, {
-        imageDataUrl: asset.dataUrl,
-        prompt: buildKontextPrompt(latestTask, asset),
+      const result = await callFalFlux2Edit(this.config, {
+        imageDataUrls: validAssets.map((asset) => asset.dataUrl),
+        prompt: buildFlux2Prompt(latestTask, validAssets),
       });
 
       this.repository.completeTask(task.userId, task.id, {
@@ -97,7 +102,7 @@ export class ImageTaskService {
         error instanceof Error ? error.message : "image task failed",
         {
           taskId: task.id,
-          assetId: task.assetId,
+          assetIds: latestTask.assetIds,
         },
       );
       this.repository.markTaskFailed(
@@ -116,20 +121,22 @@ function estimateDataUrlSize(dataUrl: string): number {
   return Math.floor((payload.length * 3) / 4);
 }
 
-function buildKontextPrompt(task: ImageTask, asset: ImageAsset): string {
+function buildFlux2Prompt(task: ImageTask, assets: ImageAsset[]): string {
   const petLabel =
     task.petType === "cat" ? "cat" : task.petType === "dog" ? "dog" : "pet";
+  const sourceFilenames = assets.map((asset) => asset.filename).join(", ");
   return [
-    `Transform the uploaded ${petLabel} photo into a cute 2D pixel art character portrait.`,
-    "Preserve the pet's obvious visual identity from the source image, especially face shape, ears, coat colors, markings, and overall silhouette.",
-    "Make the result adorable, clean, game-ready, and emotionally warm.",
+    `Transform the uploaded ${petLabel} reference photo${assets.length > 1 ? "s" : ""} into one cute 2D pixel art character portrait.`,
+    "Use all reference images together to preserve the pet's obvious visual identity, especially face shape, ears, coat colors, markings, eye shape, muzzle, paws, and overall silhouette.",
+    "If the references disagree, prioritize features that appear consistently across multiple images and keep the final character coherent.",
+    "Make the result adorable, clean, game-ready, emotionally warm, and suitable as a memorial companion avatar.",
     `Output style preset: ${task.stylePreset}.`,
     `Output should read clearly at ${task.outputSize}x${task.outputSize}.`,
     "Keep a simple or transparent background and avoid realistic shading.",
     task.preserveTraits
       ? "Trait preservation priority is high."
       : "Allow mild stylization over strict fidelity.",
-    `Source filename: ${asset.filename}.`,
+    `Source filenames: ${sourceFilenames}.`,
   ].join(" ");
 }
 

@@ -16,6 +16,14 @@ import { AiSettings } from './components/AiSettings';
 import { Starfield } from './components/Starfield';
 import { getPetResponse, generatePetAvatar, analyzePetImages, generateAllPetMoods } from './services/geminiService';
 import { cn } from './lib/utils';
+import {
+  getAccountStorageItem,
+  migrateLegacyAccountStorage,
+  removeAccountStorageItem,
+  setAccountStorageItem,
+} from './services/accountStorage';
+import { getBackendCurrentUser, getCachedBackendUser, loginWithDisplayName } from './services/backendClient';
+import { buildMemorySnippets, shouldPromptForShyHungryPet } from './services/nebulaRules';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -27,19 +35,57 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isBackendLoggedIn, setIsBackendLoggedIn] = useState(false);
+  const [loginName, setLoginName] = useState(() => localStorage.getItem('wangxing_login_name') || '喵汪星旅人');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Load data from local storage
   useEffect(() => {
-    // Legacy cleanup for old/dead API URLs
-    const currentBaseUrl = localStorage.getItem('wangxing_user_base_url');
-    if (currentBaseUrl === 'https://api.go-model.com' || currentBaseUrl === 'https://twob.pp.ua/v1') {
-      localStorage.setItem('wangxing_user_base_url', 'https://once.novai.su/v1');
-      console.log('Migrated legacy API URL to https://once.novai.su/v1');
-    }
+    const loadData = async () => {
+      await getBackendCurrentUser().then((user) => {
+        setIsBackendLoggedIn(Boolean(user));
+        if (user) migrateLegacyAccountStorage(user.id);
+      }).catch(() => null);
 
-    const savedPet = localStorage.getItem('wangxing_pet_v2');
-    const savedProfile = localStorage.getItem('wangxing_profile_v2');
-    const savedMessages = localStorage.getItem('wangxing_messages_v2');
+      const savedPet = getAccountStorageItem('wangxing_pet_v2');
+      const savedProfile = getAccountStorageItem('wangxing_profile_v2');
+      const savedMessages = getAccountStorageItem('wangxing_messages_v2');
+
+      if (savedProfile) {
+        setUserProfile(JSON.parse(savedProfile));
+      } else {
+        const defaultProfile: UserProfile = {
+          uid: 'local_user',
+          displayName: '喵汪星旅人',
+          coins: 500,
+          inventory: []
+        };
+        setUserProfile(defaultProfile);
+        setAccountStorageItem('wangxing_profile_v2', JSON.stringify(defaultProfile));
+      }
+
+      if (savedPet) {
+        setPet(JSON.parse(savedPet));
+      } else {
+        setIsCreating(true);
+      }
+
+      if (savedMessages) {
+        setMessages(JSON.parse(savedMessages));
+      }
+
+      setIsLoading(false);
+    };
+
+    void loadData();
+  }, []);
+
+  const reloadAccountData = () => {
+    setIsBackendLoggedIn(Boolean(getCachedBackendUser()));
+    const savedPet = getAccountStorageItem('wangxing_pet_v2');
+    const savedProfile = getAccountStorageItem('wangxing_profile_v2');
+    const savedMessages = getAccountStorageItem('wangxing_messages_v2');
 
     if (savedProfile) {
       setUserProfile(JSON.parse(savedProfile));
@@ -51,21 +97,30 @@ export default function App() {
         inventory: []
       };
       setUserProfile(defaultProfile);
-      localStorage.setItem('wangxing_profile_v2', JSON.stringify(defaultProfile));
+      setAccountStorageItem('wangxing_profile_v2', JSON.stringify(defaultProfile));
     }
 
-    if (savedPet) {
-      setPet(JSON.parse(savedPet));
-    } else {
-      setIsCreating(true);
-    }
+    setPet(savedPet ? JSON.parse(savedPet) : null);
+    setMessages(savedMessages ? JSON.parse(savedMessages) : []);
+    setIsCreating(!savedPet);
+    setActiveTab('home');
+  };
 
-    if (savedMessages) {
-      setMessages(JSON.parse(savedMessages));
+  const handleLoginBeforeCreate = async () => {
+    setIsLoggingIn(true);
+    setLoginError('');
+    try {
+      const result = await loginWithDisplayName(loginName);
+      localStorage.setItem('wangxing_login_name', result.user.nickName);
+      migrateLegacyAccountStorage(result.user.id);
+      setIsBackendLoggedIn(true);
+      reloadAccountData();
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : '登录失败');
+    } finally {
+      setIsLoggingIn(false);
     }
-
-    setIsLoading(false);
-  }, []);
+  };
 
   // Auto-recovery of energy
   useEffect(() => {
@@ -75,12 +130,37 @@ export default function App() {
         if (!prev) return null;
         const newEnergy = Math.min(100, prev.energy + 1);
         const newPet = { ...prev, energy: newEnergy };
-        localStorage.setItem('wangxing_pet_v2', JSON.stringify(newPet));
+        setAccountStorageItem('wangxing_pet_v2', JSON.stringify(newPet));
         return newPet;
       });
     }, 30000); // Recover 1 energy every 30s
     return () => clearInterval(interval);
   }, [pet?.id]);
+
+  useEffect(() => {
+    if (!pet || !userProfile) return;
+    const today = new Date().toLocaleDateString('en-CA');
+    const storageKey = `wangxing_hungry_hint:${pet.id}:${today}`;
+    if (localStorage.getItem(storageKey)) return;
+    if (!shouldPromptForShyHungryPet(pet.personality)) return;
+
+    const timer = setTimeout(() => {
+      const hint: ChatMessage = {
+        id: `hungry-${Date.now()}`,
+        sender: 'pet',
+        text: `${pet.ownerTitle}，我刚刚路过双星食堂又绕开了……有一点点饿，但是那里好多小伙伴，我有点不好意思去。你要是有星辰币，能不能给我买点小零食呀？`,
+        timestamp: Date.now(),
+      };
+      setMessages(prev => {
+        const nextMessages = [...prev, hint];
+        setAccountStorageItem('wangxing_messages_v2', JSON.stringify(nextMessages));
+        return nextMessages;
+      });
+      localStorage.setItem(storageKey, '1');
+    }, 4500 + Math.random() * 6000);
+
+    return () => clearTimeout(timer);
+  }, [pet?.id, userProfile?.coins]);
 
   const handleAscensionComplete = async (data: any) => {
     setIsGenerating(true);
@@ -104,7 +184,7 @@ export default function App() {
         ? `${analysisData.breed || data.type}, coat colors: ${analysisData.primaryColor} and ${analysisData.secondaryColor || ''}, patterns: ${analysisData.patterns}, ears: ${analysisData.earType}, tail: ${analysisData.tailType}, unique features: ${analysisData.uniqueFeatures}, colors to use: ${analysisData.colorPalette?.join(', ') || ''}, character: ${personalityStr}`
         : `${data.type}, ${personalityStr}`;
 
-      const moodImages = await generateAllPetMoods(refinedDescription);
+      const moodImages = await generateAllPetMoods(refinedDescription, data.breed, data.images);
 
       const newPet: Pet = {
         id: Date.now().toString(),
@@ -126,7 +206,7 @@ export default function App() {
           templateId: 'starry',
           furniture: []
         },
-        referenceImages: data.images,
+        referenceImages: await createReferenceImagePreviews(data.images),
         visualTraits: analysisData ? {
           earType: analysisData.earType,
           tailType: analysisData.tailType,
@@ -150,9 +230,10 @@ export default function App() {
         timestamp: Date.now(),
       };
       setMessages([greeting]);
-      localStorage.setItem('wangxing_messages_v2', JSON.stringify([greeting]));
+      setAccountStorageItem('wangxing_messages_v2', JSON.stringify([greeting]));
     } catch (error) {
       console.error("Ascension Error:", error);
+      alert("创建失败：" + (error instanceof Error ? error.message : "图像生成或网络请求失败"));
     } finally {
       setIsGenerating(false);
     }
@@ -160,14 +241,14 @@ export default function App() {
 
   const savePetData = (updatedPet: Pet) => {
     try {
-      localStorage.setItem('wangxing_pet_v2', JSON.stringify(updatedPet));
+      setAccountStorageItem('wangxing_pet_v2', JSON.stringify(stripLargeReferenceImages(updatedPet)));
     } catch (e) {
       if (e instanceof DOMException && (e.code === 22 || e.code === 1014 || e.name === 'QuotaExceededError')) {
         console.warn("localStorage quota exceeded, attempting to prune reference images...");
         // Prune large data: referenceImages are usually the biggest offenders (Base64)
-        const prunedPet = { ...updatedPet, referenceImages: [] };
+        const prunedPet = stripLargeReferenceImages(updatedPet, 0);
         try {
-          localStorage.setItem('wangxing_pet_v2', JSON.stringify(prunedPet));
+          setAccountStorageItem('wangxing_pet_v2', JSON.stringify(prunedPet));
           setPet(prunedPet);
           alert("由于存储空间限制，部分参考图片已被清理，但您的宠物信息已成功保存。");
         } catch (innerError) {
@@ -191,7 +272,7 @@ export default function App() {
 
     const newMsgs = [...messages, userMsg];
     setMessages(newMsgs);
-    localStorage.setItem('wangxing_messages_v2', JSON.stringify(newMsgs));
+    setAccountStorageItem('wangxing_messages_v2', JSON.stringify(newMsgs));
     setIsTyping(true);
 
     const history = newMsgs.slice(-10).map(m => ({
@@ -208,7 +289,8 @@ export default function App() {
         text, 
         history,
         pet.breed,
-        pet.encounterDate
+        pet.encounterDate,
+        buildMemorySnippets(pet.stories)
       );
       
       const petMsg: ChatMessage = {
@@ -220,7 +302,7 @@ export default function App() {
 
       const finalMsgs = [...newMsgs, petMsg];
       setMessages(finalMsgs);
-      localStorage.setItem('wangxing_messages_v2', JSON.stringify(finalMsgs));
+      setAccountStorageItem('wangxing_messages_v2', JSON.stringify(finalMsgs));
     } catch (error) {
       console.error("Message Error:", error);
     } finally {
@@ -237,7 +319,11 @@ export default function App() {
         refinedDescription += `, traits: ears ${pet.visualTraits.earType}, tail ${pet.visualTraits.tailType}, color ${pet.visualTraits.primaryColor}`;
       }
 
-      const moodImages = await generateAllPetMoods(refinedDescription, pet.breed);
+      const moodImages = await generateAllPetMoods(
+        refinedDescription,
+        pet.breed,
+        undefined,
+      );
       const newImageUrl = moodImages.normal;
       
       const updatedPet = {
@@ -301,7 +387,7 @@ export default function App() {
 
   const handleResetChat = () => {
     setMessages([]);
-    localStorage.removeItem('wangxing_messages_v2');
+    removeAccountStorageItem('wangxing_messages_v2');
   };
 
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
@@ -349,7 +435,7 @@ export default function App() {
 
       // Only re-analyze and re-generate if new images are provided OR personality/type/breed changed
       if (
-        (data.images.length > 0 && JSON.stringify(data.images) !== JSON.stringify(pet.referenceImages)) ||
+        data.images.length > 0 ||
         data.personality !== pet.personality ||
         data.type !== pet.type ||
         data.breed !== pet.breed
@@ -363,7 +449,11 @@ export default function App() {
             primaryColor: analysisData.primaryColor
           };
         }
-        const moodImages = await generateAllPetMoods(refinedDescription, data.breed);
+        const moodImages = await generateAllPetMoods(
+          refinedDescription,
+          data.breed,
+          data.images,
+        );
         newMoodImages = moodImages;
         if (moodImages.normal) newAvatarUrl = moodImages.normal;
       }
@@ -380,7 +470,9 @@ export default function App() {
         imageUrl: newAvatarUrl,
         moodImages: newMoodImages,
         customTextureUrl: newAvatarUrl,
-        referenceImages: data.images,
+        referenceImages: data.images.length > 0
+          ? await createReferenceImagePreviews(data.images)
+          : pet.referenceImages,
         stories: data.stories,
         visualTraits: newVisualTraits
       };
@@ -408,6 +500,38 @@ export default function App() {
   }
 
   if (isCreating) {
+    if (!isBackendLoggedIn) {
+      return (
+        <div className="min-h-screen bg-[#050510] flex items-center justify-center px-6 relative overflow-hidden">
+          <Starfield count={80} />
+          <div className="relative z-10 w-full max-w-sm bg-white rounded-[2rem] p-7 shadow-2xl border border-white/30">
+            <div className="w-14 h-14 rounded-2xl bg-sepia-900 text-white flex items-center justify-center mb-5 shadow-lg">
+              <User size={26} />
+            </div>
+            <h1 className="text-2xl font-serif font-bold text-sepia-900">先登录账号</h1>
+            <p className="mt-2 text-sm leading-relaxed text-sepia-500">
+              宠物资料、AI 配置和上传图片都会绑定到当前账号。退出后不会继续使用这个账号的数据。
+            </p>
+            <div className="mt-6 space-y-3">
+              <input
+                value={loginName}
+                onChange={(event) => setLoginName(event.target.value)}
+                placeholder="输入体验昵称"
+                className="w-full bg-sepia-50 border border-sepia-100 rounded-2xl px-4 py-4 text-[14px] focus:outline-none focus:ring-2 focus:ring-sepia-200 text-sepia-800"
+              />
+              <button
+                onClick={handleLoginBeforeCreate}
+                disabled={isLoggingIn}
+                className="w-full bg-sepia-900 text-white py-4 rounded-2xl font-bold shadow-xl hover:bg-sepia-800 transition-all disabled:opacity-60"
+              >
+                {isLoggingIn ? "登录中..." : "登录并开始创建"}
+              </button>
+              {loginError && <p className="text-xs text-red-500 text-center">{loginError}</p>}
+            </div>
+          </div>
+        </div>
+      );
+    }
     return <AscensionCeremony onComplete={handleAscensionComplete} isGenerating={isGenerating} />;
   }
 
@@ -500,7 +624,7 @@ export default function App() {
                       userProfile={userProfile}
                       onUpdateProfile={(profile) => {
                         setUserProfile(profile);
-                        localStorage.setItem('wangxing_profile_v2', JSON.stringify(profile));
+                        setAccountStorageItem('wangxing_profile_v2', JSON.stringify(profile));
                       }}
                       onRefreshAvatar={handleRefreshAvatar}
                       isGenerating={isGenerating}
@@ -620,7 +744,7 @@ export default function App() {
                 onUpdateProfile={(profile) => {
                   if (setUserProfile) {
                     setUserProfile(profile);
-                    localStorage.setItem('wangxing_profile_v2', JSON.stringify(profile));
+                    setAccountStorageItem('wangxing_profile_v2', JSON.stringify(profile));
                   }
                 }}
               />
@@ -655,10 +779,13 @@ export default function App() {
             >
               {pet && (
                 <Whisper 
+                  petId={pet.id}
                   ownerTitle={pet.ownerTitle} 
                   petName={pet.name} 
                   petType={pet.type}
                   personality={pet.personality}
+                  speakingStyle={pet.speakingStyle}
+                  stories={pet.stories}
                 />
               )}
             </motion.div>
@@ -712,7 +839,11 @@ export default function App() {
               </div>
 
               <div className="overflow-y-auto max-h-[60vh] px-1 no-scrollbar">
-                <AiSettings onClose={() => setIsSettingsOpen(false)} onResetChat={handleResetChat} />
+                <AiSettings
+                  onClose={() => setIsSettingsOpen(false)}
+                  onResetChat={handleResetChat}
+                  onAccountChanged={reloadAccountData}
+                />
               </div>
 
               <button 
@@ -727,4 +858,42 @@ export default function App() {
       </AnimatePresence>
     </div>
   );
+}
+
+function stripLargeReferenceImages(pet: Pet, maxPreviewCount = 4): Pet {
+  const safeReferenceImages = (pet.referenceImages || [])
+    .filter((image) => typeof image === 'string' && image.length < 180_000)
+    .slice(0, maxPreviewCount);
+  return {
+    ...pet,
+    referenceImages: safeReferenceImages,
+  };
+}
+
+async function createReferenceImagePreviews(images: string[]): Promise<string[]> {
+  const previews = await Promise.all(images.slice(0, 4).map((image) => createImagePreview(image)));
+  return previews.filter(Boolean);
+}
+
+async function createImagePreview(imageDataUrl: string): Promise<string> {
+  if (!imageDataUrl.startsWith('data:image/')) return '';
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxSize = 160;
+      const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      const context = canvas.getContext('2d');
+      if (!context) {
+        resolve('');
+        return;
+      }
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.65));
+    };
+    image.onerror = () => resolve('');
+    image.src = imageDataUrl;
+  });
 }

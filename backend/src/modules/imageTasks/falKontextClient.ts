@@ -1,9 +1,9 @@
 import { ImageTaskRuntimeConfig } from "../../config/runtime";
 
-export async function callFalFluxKontext(
+export async function callFalFlux2Edit(
   config: ImageTaskRuntimeConfig,
   input: {
-    imageDataUrl: string;
+    imageDataUrls: string[];
     prompt: string;
   },
 ): Promise<{
@@ -12,6 +12,10 @@ export async function callFalFluxKontext(
 }> {
   if (!config.falKey) {
     throw new Error("FAL_KEY_MISSING");
+  }
+  const imageUrls = input.imageDataUrls.map((imageUrl) => imageUrl.trim()).filter(Boolean).slice(0, 4);
+  if (imageUrls.length === 0) {
+    throw new Error("FAL_IMAGE_URLS_MISSING");
   }
 
   const baseUrl = config.falQueueBaseUrl.replace(/\/$/, "");
@@ -24,7 +28,7 @@ export async function callFalFluxKontext(
     },
     body: JSON.stringify({
       prompt: input.prompt,
-      image_url: input.imageDataUrl,
+      image_urls: imageUrls,
       output_format: "png",
       safety_tolerance: "2",
     }),

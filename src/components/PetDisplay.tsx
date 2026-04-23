@@ -124,7 +124,28 @@ export function PetDisplay({ pet, onInteract, userProfile, onUpdateProfile, onRe
     <div className={cn(
       "relative w-full h-full flex items-center justify-center pointer-events-none"
     )}>
-      {/* Background Layer Removed for cleaner look */}
+      {/* Nest Layer: starfield background is provided by App, nest stays between sky and pet. */}
+      {pet.nestImageUrl && (
+        <motion.div
+          className="absolute z-[6] bottom-[12%] left-1/2 w-[78%] max-w-[260px] aspect-[4/3] -translate-x-1/2 pointer-events-none"
+          initial={{ opacity: 0, scale: 0.9, y: 16 }}
+          animate={{ opacity: 0.72, scale: 1, y: [0, -4, 0] }}
+          transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+        >
+          <div className="absolute inset-0 rounded-full bg-cyan-200/15 blur-[55px]" />
+          <img
+            src={pet.nestImageUrl}
+            alt={`${pet.name}的小窝`}
+            className="relative w-full h-full object-contain opacity-75 saturate-[0.55] brightness-110"
+            style={{
+              filter: 'drop-shadow(0 0 24px rgba(125, 211, 252, 0.35))',
+              maskImage: 'radial-gradient(circle at center, black 48%, transparent 78%)',
+              WebkitMaskImage: 'radial-gradient(circle at center, black 48%, transparent 78%)'
+            }}
+            referrerPolicy="no-referrer"
+          />
+        </motion.div>
+      )}
 
       {/* Pet Layer */}
       <motion.div
@@ -172,7 +193,8 @@ export function PetDisplay({ pet, onInteract, userProfile, onUpdateProfile, onRe
               transition={{ duration: 0.3 }}
               className="relative w-full h-full object-contain image-pixelated pointer-events-none"
               style={{
-                filter: 'drop-shadow(0 10px 20px rgba(0,0,0,0.5)) brightness(1.1)',
+                filter: 'drop-shadow(0 0 18px rgba(191, 219, 254, 0.45)) drop-shadow(0 10px 20px rgba(0,0,0,0.45)) brightness(1.12) saturate(0.72)',
+                opacity: 0.92,
                 maskImage: 'radial-gradient(circle at center, black 40%, transparent 70%)',
                 WebkitMaskImage: 'radial-gradient(circle at center, black 40%, transparent 70%)'
               }}

@@ -3,13 +3,13 @@ import { Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { createApp } from "../src/app";
-import { RuntimeConfig } from "../src/config/runtime";
+import { buildTestRuntimeConfig } from "./testRuntimeConfig";
 
 let server: Server;
 let baseUrl = "";
 
 before(async () => {
-  const runtimeConfig: RuntimeConfig = {
+  const runtimeConfig = buildTestRuntimeConfig("operations", {
     ai: {
       openAiApiKey: undefined,
       openAiBaseUrl: "http://127.0.0.1:1/v1",
@@ -19,14 +19,14 @@ before(async () => {
     imageTasks: {
       falKey: undefined,
       falQueueBaseUrl: "http://127.0.0.1:1",
-      falModelId: "fal-ai/flux-kontext/dev",
+      falModelId: "fal-ai/flux-2/edit",
       falPollIntervalMs: 10,
       falTimeoutMs: 1000,
     },
     scheduling: {
       pollIntervalMs: 20,
     },
-  };
+  });
 
   const app = createApp(runtimeConfig);
   server = app.listen(0);
